@@ -6,12 +6,24 @@ import (
 	"math/big"
 )
 
+// SchnorrGroup represents a q-order subgroup of the multiplicative group of
+// integers modulo p.
 type SchnorrGroup struct {
+	// Prime modulus of multiplicative group of integers modulo p, (Z/pZ)*
 	P *big.Int
+	// Prime order of subgroup G of (Z/pZ)*
 	Q *big.Int
+	// Generator of subgroup G
 	G *big.Int
 }
 
+// GenerateSchnorrGroup generates a Schnorr subgroup of prime order Q, with q
+// of length qBits, within the multiplicative group of integers modulo P, with
+// p of length pBits.
+//
+// qBits must be strictly less than pBits, otherwise an error is returned.  An
+// error may also be returned if sourcing of cryptographically secure
+// randomness fails.
 func GenerateSchnorrGroup(pBits int, qBits int) (SchnorrGroup, error) {
 	var err error
 	schnorr := SchnorrGroup{}
