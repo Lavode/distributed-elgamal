@@ -8,7 +8,11 @@ import (
 	"math/big"
 )
 
-// SHA512
+// hashByteSize is the size - in bytes - of the hash algorithm used by this
+// implementation of hashed ElGamal.
+// In our case we use SHA512, hence 64 bytes.
+// All messages to encrypt must contain exactly hashByteSize bytes, and all
+// ciphertexts will also be of the same length.
 const hashByteSize int = 64
 
 // PublicKey represents a public key of the ElGamal cryptosystem.
@@ -19,10 +23,16 @@ type PublicKey struct {
 	Y *big.Int
 }
 
-// Field returns the finite field over which the ElGamal cryptosystem is
-// defined.
-func (pk *PublicKey) Field() (gf.GF, error) {
+// Zp returns the finite field (Z / pZ), which G - over which the ElGamal
+// cryptosystem is defined - is a subgroup of.
+func (pk *PublicKey) Zp() (gf.GF, error) {
 	return gf.NewGF(pk.P)
+}
+
+// Zq returns the finite field (Z / qZ), which is used in the secret sharing
+// scheme.
+func (pk *PublicKey) Zq() (gf.GF, error) {
+	return gf.NewGF(pk.Q)
 }
 
 // PrivateKey represents a private key of the ElGamal cryptosystem.
@@ -35,10 +45,14 @@ type PrivateKey struct {
 // cryptosystem.
 type PrivateKeyShare secretshare.Share
 
+// DecryptionShare represents a single party's decryption share.
 type DecryptionShare secretshare.Share
 
+// Ciphertext represents a ciphertext of the hashed ElGamal cryptosystem.
 type Ciphertext struct {
+	// R = g^x mod p
 	R *big.Int
+	// C = H(y^r) XOR m
 	C []byte
 }
 
@@ -68,16 +82,16 @@ func KeyGen(pBits int, qBits int, t int, n int) (PublicKey, PrivateKey, []Privat
 	pub.G = schnorr.G
 
 	// (Z/qZ) is used for:
-	// - Generation of private key x, such that `g^x` is an element of G
+	// - Generation of a private key x, such that `g^x` is an element of G
 	// - Secret sharing using polynomials over (Z/qZ)
-	zq, err := gf.NewGF(pub.Q)
+	zq, err := pub.Zq()
 	if err != nil {
 		return pub, priv, shares, err
 	}
 
 	// (Z/pZ) is used for all operations *within* G, as it's a subgroup of
 	// (Z/pZ)
-	zp, err := pub.Field()
+	zp, err := pub.Zp()
 	if err != nil {
 		return pub, priv, shares, err
 	}
@@ -101,24 +115,27 @@ func KeyGen(pBits int, qBits int, t int, n int) (PublicKey, PrivateKey, []Privat
 	return pub, priv, shares, nil
 }
 
+// Enc encrypts a message using hashed ElGamal.
+//
+// Parameters:
+// - pub: Public key to use for encryption
+// - message: Message to encrypt. Must be of length hashByteSize
+//
+// An error is returned if encryption fails.
 func Enc(pub PublicKey, message []byte) (Ciphertext, error) {
 	var ctxt Ciphertext
 	// Using SHA512
 	ctxt.C = make([]byte, hashByteSize)
 
-	if len(message) > hashByteSize {
-		return ctxt, fmt.Errorf("Message must be at most %d bytes; got %d", hashByteSize, len(message))
+	if len(message) != hashByteSize {
+		return ctxt, fmt.Errorf("Message must be %d bytes; got %d", hashByteSize, len(message))
 	}
 
-	// This will implicitly pad with zero-bytes, if the input message is <hashByteSize byte
-	msg := make([]byte, hashByteSize)
-	copy(msg, message)
-
-	zq, err := gf.NewGF(pub.Q)
+	zq, err := pub.Zq()
 	if err != nil {
 		return ctxt, err
 	}
-	zp, err := pub.Field()
+	zp, err := pub.Zp()
 	if err != nil {
 		return ctxt, err
 	}
@@ -134,12 +151,16 @@ func Enc(pub PublicKey, message []byte) (Ciphertext, error) {
 	key := sha512.Sum512(yr.Bytes())
 
 	for i, keyByte := range key {
-		ctxt.C[i] = msg[i] ^ keyByte
+		ctxt.C[i] = message[i] ^ keyByte
 	}
 
 	return ctxt, nil
 }
 
+// Dec creates a single decryption share of a ciphertext based on the passed
+// share of the private key.
+//
+// t of these can be passed to Recover() to decrypt the ciphertext.
 func Dec(pub PublicKey, keyShare PrivateKeyShare, ctxt Ciphertext) (DecryptionShare, error) {
 	decryptionShare := DecryptionShare(
 		secretshare.Share{
@@ -147,17 +168,20 @@ func Dec(pub PublicKey, keyShare PrivateKeyShare, ctxt Ciphertext) (DecryptionSh
 		},
 	)
 
-	zp, err := pub.Field()
+	zp, err := pub.Zp()
 	if err != nil {
 		return decryptionShare, err
 	}
 
-	// Secret sharing happens over (Z/pZ)
+	// While the coefficients of the secret sharing polynomials are over
+	// (Z/qZ), the values (by virtue of being a power of a generator of G)
+	// are in (Z/pZ)
 	decryptionShare.Value = zp.Exp(ctxt.R, keyShare.Value) // R^{x_i} mod p
 
 	return decryptionShare, nil
 }
 
+// Recover decrypts a ciphertext using t decryption shares.
 func Recover(pub PublicKey, decryptionShares []DecryptionShare, ctxt Ciphertext) ([]byte, error) {
 	msg := make([]byte, hashByteSize)
 
@@ -166,13 +190,13 @@ func Recover(pub PublicKey, decryptionShares []DecryptionShare, ctxt Ciphertext)
 		xs[i] = big.NewInt(int64(share.ID))
 	}
 
-	zp, err := pub.Field()
+	zp, err := pub.Zp()
 	if err != nil {
 		return msg, err
 	}
 
 	// Mind that secret sharing happens over (Z/qZ)
-	zq, err := gf.NewGF(pub.Q)
+	zq, err := pub.Zq()
 	if err != nil {
 		return msg, err
 	}

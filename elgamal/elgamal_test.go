@@ -2,7 +2,7 @@ package elgamal
 
 import (
 	"bytes"
-	"github.com/lavode/secret-sharing/gf"
+	"crypto/sha512"
 	"github.com/lavode/secret-sharing/secretshare"
 	"math/big"
 	"testing"
@@ -18,7 +18,7 @@ func TestPublicKeyField(t *testing.T) {
 		Y: big.NewInt(8),
 	}
 
-	field, err := pk.Field()
+	field, err := pk.Zp()
 	if err != nil {
 		t.Fatalf("Error generating field: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestKeyGen(t *testing.T) {
 		t.Errorf("Expected 5 shares; got %d", len(shares))
 	}
 
-	field, err := gf.NewGF(pub.Q)
+	field, err := pub.Zq()
 	if err != nil {
 		t.Fatalf("Error generating field: %v", err)
 	}
@@ -81,10 +81,15 @@ func TestEnc(t *testing.T) {
 			Q: big.NewInt(11),
 			G: big.NewInt(4),
 		},
-		Y: big.NewInt(8),
+		Y: big.NewInt(16),
 	}
 
-	msg := []byte("Hello world")
+	priv := PrivateKey{
+		X: big.NewInt(2),
+	}
+
+	msg := make([]byte, 64)
+	copy(msg, []byte("Hello world"))
 	ctxt, err := Enc(pub, msg)
 	if err != nil {
 		t.Fatalf("Enc returned error: %v", err)
@@ -92,13 +97,30 @@ func TestEnc(t *testing.T) {
 	if len(ctxt.C) != 64 {
 		t.Errorf("Expected ciphertext of 64 bytes; got %d", len(ctxt.C))
 	}
-	// TODO test that decryption returns actual message
-	// TODO test that only correct-length message is allowed
+
+	var z = &big.Int{}
+	z.Exp(ctxt.R, priv.X, pub.P) // g^{rx} mod p
+	key := sha512.Sum512(z.Bytes())
+
+	recovered := make([]byte, len(ctxt.C))
+	for i := 0; i < len(ctxt.C); i++ {
+		recovered[i] = ctxt.C[i] ^ key[i]
+	}
+
+	if !bytes.Equal(recovered, msg) {
+		t.Errorf("Expected encryption of message; got R = %d, C = %x, Recovered = %x", ctxt.R, ctxt.C, recovered)
+	}
 
 	msg = make([]byte, 65)
 	_, err = Enc(pub, msg)
 	if err == nil {
 		t.Errorf("Expected error if message exceeds 64 bytes; got none")
+	}
+
+	msg = make([]byte, 63)
+	_, err = Enc(pub, msg)
+	if err == nil {
+		t.Errorf("Expected error if message is less than 64 bytes; got none")
 	}
 }
 
